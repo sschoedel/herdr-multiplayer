@@ -1,0 +1,136 @@
+name: Fork binaries
+
+# Builds herdr-multiplayer for the machines we run it on and publishes them as the
+# moving `fork-latest` prerelease. Build steps mirror upstream's build-artifacts-manual.yml.
+
+on:
+  push:
+    branches: [multiplayer-cursors]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  group: fork-binaries
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RUST_TOOLCHAIN_VERSION: 1.96.1
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Static musl binary: runs on any Linux, including Ubuntu 22.04 hosts.
+          - name: herdr-linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          # Apple Silicon Macs.
+          - name: herdr-macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Install Zig
+        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
+        with:
+          version: 0.16.0
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build musl-tools
+
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
+
+      - name: Remove Zig caches
+        run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
+          file ${{ matrix.name }}
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            ldd ${{ matrix.name }} 2>&1 | grep -q "statically linked"
+          fi
+          ./${{ matrix.name }} --version 2>/dev/null || true
+          python3 -c "import hashlib, pathlib; p = pathlib.Path('${{ matrix.name }}'); print(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}')" > ${{ matrix.name }}.sha256
+          cat ${{ matrix.name }}.sha256
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            ${{ matrix.name }}
+            ${{ matrix.name }}.sha256
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish fork-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          cd dist
+          cat *.sha256 > SHA256SUMS
+          base="https://github.com/$REPO/releases/download/fork-latest"
+          cat > notes.md <<EOF
+          Built from \`$GITHUB_SHA\` on \`multiplayer-cursors\`. Replaced on every push.
+
+          \`\`\`
+          $(cat SHA256SUMS)
+          \`\`\`
+
+          **Mac (Apple Silicon):**
+          \`\`\`bash
+          curl -fL -o ~/Downloads/herdr $base/herdr-macos-aarch64
+          install -m 755 ~/Downloads/herdr ~/.local/bin/herdr
+          \`\`\`
+          Then detach (\`ctrl+b q\`) and run \`herdr\` again.
+
+          **Linux server (x86_64), keeping every pane running:**
+          \`\`\`bash
+          curl -fL -o /tmp/herdr $base/herdr-linux-x86_64
+          install -m 755 /tmp/herdr ~/.local/bin/herdr
+          herdr server live-handoff --import-exe ~/.local/bin/herdr
+          \`\`\`
+          EOF
+          gh release delete fork-latest --repo "$REPO" --cleanup-tag --yes || true
+          gh release create fork-latest --repo "$REPO" --prerelease \
+            --target "$GITHUB_SHA" --title "fork-latest (${GITHUB_SHA::8})" \
+            --notes-file notes.md \
+            herdr-macos-aarch64 herdr-linux-x86_64 SHA256SUMS
