@@ -1,5 +1,10 @@
 # herdr
 
+> **This is herdr-multiplayer, a modified fork of [herdr](https://github.com/herdrdev/herdr) v0.9.5 — not the official project.**
+> It adds shared sessions for several people: each connection keeps its own pane focus, people see each other's mouse pointer and focused pane, and `ui.shared_tab_size = "smallest"` fits shared tabs to every viewer.
+> See the commits on `multiplayer-cursors` for every change. Prebuilt binaries: [fork-latest](https://github.com/sschoedel/herdr-multiplayer/releases/tag/fork-latest).
+> Please report fork issues here, not to the upstream project. herdr is licensed under Apache-2.0 (see [LICENSE](LICENSE)).
+
 
 <p align="center">
   <img src="assets/logo.png" alt="herdr" width="100" />
