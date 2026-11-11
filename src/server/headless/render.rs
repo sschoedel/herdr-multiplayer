@@ -47,14 +47,7 @@ impl HeadlessServer {
             }
         }
         let target = self.shell_target_for_client(client_id)?;
-        let tab = self
-            .app
-            .state
-            .workspaces
-            .get(target.workspace_index)?
-            .tabs
-            .get(target.tab_index)?;
-        let pane_id = tab.layout.focused();
+        let pane_id = self.shell_client_tab_focus(client_id, target)?;
         self.app
             .state
             .runtime_for_pane_in_workspace(
@@ -444,11 +437,15 @@ impl HeadlessServer {
 
     pub(super) fn render_and_stream(&mut self) {
         self.render_and_stream_with_graphics_limit(MAX_GRAPHICS_FRAME_SIZE);
+        // Every focus, navigation, and attach change that peers can observe produces a full
+        // render, so presence is reconciled here rather than on every loop iteration.
+        self.sync_presence();
     }
 
     #[cfg(all(test, unix))]
     pub(super) fn render_and_stream_with_test_graphics_limit(&mut self, max: usize) {
         self.render_and_stream_with_graphics_limit(max);
+        self.sync_presence();
     }
 
     fn render_and_stream_with_graphics_limit(&mut self, graphics_frame_limit: usize) {
@@ -590,6 +587,8 @@ impl HeadlessServer {
                 } else {
                     crate::kitty_graphics::HostCellSize::default()
                 };
+                let focus_override =
+                    shell_target.and_then(|target| self.shell_client_tab_focus(client_id, target));
                 let result = render_client_shell_pane_surface(
                     &mut self.app,
                     shell_target,
@@ -599,6 +598,7 @@ impl HeadlessServer {
                     render_cell_size,
                     &shell_graphics_delivery,
                     client_id,
+                    focus_override,
                 );
                 crate::render_prof::duration_since(
                     "full_render.render_tab_surface_virtual",

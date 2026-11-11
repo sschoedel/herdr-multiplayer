@@ -276,6 +276,17 @@ impl TileLayout {
         }
     }
 
+    /// Point focus at one viewer's pane before acting on its behalf, without recording a
+    /// focus move in the history used to pick the next pane after a close.
+    pub fn project_focus(&mut self, id: PaneId) {
+        if id != self.focus && self.pane_ids().contains(&id) {
+            self.focus = id;
+            if self.prev_focus == Some(id) {
+                self.prev_focus = None;
+            }
+        }
+    }
+
     /// Swap two pane ids in the layout tree while preserving split shape and
     /// ratios. Returns true only when both panes exist and are different.
     pub fn swap_panes(&mut self, first: PaneId, second: PaneId) -> bool {

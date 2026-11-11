@@ -1,6 +1,7 @@
 use super::*;
 
 mod event_fairness;
+mod multi_user;
 mod native_graphics;
 #[path = "pane_move.rs"]
 mod pane_move_tests;
@@ -19,7 +20,7 @@ fn client_shell_projection(
     Box<protocol::ClientShellSnapshot>,
     protocol::endpoint::EndpointAgentCompletions,
 ) {
-    let read_control = |expected| {
+    let read_control = |expected| loop {
         let ServerMessage::EndpointControl { kind, data } = read_server_message(
             receiver
                 .recv_timeout(Duration::from_secs(1))
@@ -27,8 +28,12 @@ fn client_shell_projection(
         ) else {
             panic!("expected endpoint control {expected}");
         };
+        // Presence is an independent optional control that may interleave with projections.
+        if kind == protocol::endpoint::PRESENCE_PEERS_KIND {
+            continue;
+        }
         assert_eq!(kind, expected);
-        data
+        break data;
     };
     let completions: protocol::endpoint::EndpointAgentCompletions =
         serde_json::from_str(&read_control(protocol::endpoint::AGENT_COMPLETIONS_KIND)).unwrap();
@@ -1918,10 +1923,17 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
 
     server.render_and_stream();
 
-    assert!(
-        first_control.try_recv().is_err(),
-        "another shell must not receive a navigation replacement"
-    );
+    // Presence may tell the other shell its peer moved; its own view must not change.
+    while let Ok(bytes) = first_control.recv_timeout(std::time::Duration::from_millis(50)) {
+        assert!(
+            matches!(
+                read_server_message(bytes),
+                ServerMessage::EndpointControl { kind, .. }
+                    if kind == crate::protocol::endpoint::PRESENCE_PEERS_KIND
+            ),
+            "another shell must not receive a navigation replacement"
+        );
+    }
     let second_replacement = client_shell_snapshot(&second_control);
     assert_eq!(
         second_replacement.focused_tab_id.as_deref(),

@@ -281,6 +281,18 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Pane scrollback lines to scroll per mouse wheel notch.
 # mouse_scroll_lines = 3
 
+# Name shown to other people attached to the same Herdr session.
+# Empty uses your login name.
+# presence_name = ""
+
+# Draw other attached people's mouse pointers and focused panes.
+# show_peer_cursors = true
+
+# How a tab is sized while several clients view it at once (set on the machine running
+# the shared session): "latest" sizes it to whoever interacted last; "smallest" fits every
+# viewer, so one person's typing or clicking never resizes panes under someone else.
+# shared_tab_size = "latest"
+
 # Ask for confirmation before closing a workspace
 # confirm_close = true
 

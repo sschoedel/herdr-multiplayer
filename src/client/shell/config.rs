@@ -130,6 +130,8 @@ impl ClientShellConfig {
             toast_delay_seconds: config.ui.toast.delay_seconds,
             toast_position: config.ui.toast.herdr.position,
             copy_on_select: config.ui.copy_on_select,
+            presence_name: config.ui.resolved_presence_name(),
+            show_peer_cursors: config.ui.show_peer_cursors,
             clipboard_toast_enabled: config.ui.toast.clipboard.enabled,
             clipboard_toast_position: config.ui.toast.clipboard.position,
             theme_name: theme_runtime.manual_name.clone(),
@@ -364,6 +366,8 @@ impl ClientShellConfig {
                 self.confirm_close = ui.confirm_close;
                 self.mouse_capture = ui.mouse_capture;
                 self.mouse_scroll_lines = ui.mouse_scroll_lines();
+                self.presence_name = ui.resolved_presence_name();
+                self.show_peer_cursors = ui.show_peer_cursors;
                 self.right_click_passthrough_modifiers = ui.right_click_passthrough_modifiers();
                 self.redraw_on_focus_gained = ui.redraw_on_focus_gained;
             }

@@ -80,6 +80,7 @@ mod endpoint_requests;
 mod lifecycle;
 mod native_graphics;
 mod notifications;
+mod presence;
 mod render;
 mod retained_surface;
 mod surface_interest;
@@ -953,13 +954,7 @@ impl HeadlessServer {
             })
             .and_then(|_| self.shell_focus_target(client_id));
         let should_release_focus = disconnected_focus.as_ref().is_some_and(|target| {
-            !self.clients.iter().any(|(&other_id, client)| {
-                other_id != client_id
-                    && client.is_active_shell_client()
-                    && client.outer_terminal_focus == Some(true)
-                    && self.shell_tab_id_for_client(other_id).as_deref()
-                        == Some(target.tab_id.as_str())
-            })
+            !self.shell_focus_target_has_focused_viewer(target, Some(client_id))
         });
         let was_foreground = self.foreground_client_id == Some(client_id);
         let removed = self.clients.remove(&client_id);
@@ -1035,6 +1030,9 @@ impl HeadlessServer {
         self.remove_client(client_id);
         if let Some((controller_id, target)) = restore_shell_controller {
             self.restore_shell_tab_geometry(controller_id, target);
+        } else if self.sizes_shared_tabs_to_smallest() {
+            // A departing viewer may have been the one every shared tab had to fit.
+            self.reapply_controlled_shell_tab_geometry(true);
         } else {
             self.resize_tabs_for_only_shell_client(true);
         }
@@ -2027,7 +2025,12 @@ impl HeadlessServer {
                     self.app.mark_git_status_refresh_due(Instant::now());
                 }
                 self.sync_foreground_client_state();
-                self.claim_unowned_shell_tab_geometry(client_id, true);
+                if !self.claim_unowned_shell_tab_geometry(client_id, true)
+                    && self.sizes_shared_tabs_to_smallest()
+                {
+                    // A smaller newcomer must fit too.
+                    self.reapply_controlled_shell_tab_geometry(true);
+                }
                 self.nudge_handoff_panes_on_first_client_attach();
                 true
             }
@@ -2288,13 +2291,10 @@ impl HeadlessServer {
                 {
                     return false;
                 }
-                let tab_id = self.shell_tab_id_for_client(client_id);
-                let another_focused_viewer = self.clients.iter().any(|(&other_id, client)| {
-                    other_id != client_id
-                        && client.is_active_shell_client()
-                        && client.outer_terminal_focus == Some(true)
-                        && self.shell_tab_id_for_client(other_id) == tab_id
-                });
+                let another_focused_viewer =
+                    self.shell_focus_target(client_id).is_some_and(|target| {
+                        self.shell_focus_target_has_focused_viewer(&target, Some(client_id))
+                    });
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.outer_terminal_focus = Some(focused);
                 }
@@ -2321,6 +2321,13 @@ impl HeadlessServer {
                     }
                     true
                 }
+            }
+            ServerEvent::ClientShellPresence {
+                client_id,
+                presence,
+            } => {
+                self.apply_client_shell_presence(client_id, presence);
+                false
             }
             ServerEvent::ClientShellMouseCapture { client_id, enabled } => {
                 let Some(client) = self.clients.get_mut(&client_id) else {

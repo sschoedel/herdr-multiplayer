@@ -759,7 +759,37 @@ pub(super) fn finish_client_shell_input(
         .as_ref()
         .is_none_or(|shell| shell.endpoint_is_online(endpoints.active_id()))
         && endpoints.active_surface_available();
-    for request in outcome.requests {
+    let mut requests = outcome.requests;
+    let presence_generation = endpoints
+        .connection(endpoints.active_id())
+        .filter(|connection| {
+            connection
+                .negotiation
+                .supports_capability(crate::protocol::endpoint::PRESENCE_CAPABILITY)
+        })
+        .map(|connection| connection.generation);
+    match presence_generation {
+        Some(generation) if active_endpoint_online && pending_activation.is_none() => {
+            let endpoint_id = endpoints.active_id().clone();
+            if let Some(message) = state
+                .shell
+                .as_mut()
+                .and_then(|shell| shell.presence_announcement(&endpoint_id, generation))
+            {
+                requests.insert(0, message);
+            }
+        }
+        Some(_) => {}
+        // Older endpoints would only log and drop these.
+        None => requests.retain(|request| {
+            !matches!(
+                request,
+                ClientMessage::EndpointControl { kind, .. }
+                    if kind == crate::protocol::endpoint::PRESENCE_POINTER_KIND
+            )
+        }),
+    }
+    for request in requests {
         if let ClientMessage::ClientShellHostTheme { update } = &request {
             state.record_host_theme_update(update);
             if let Some(activation) = pending_activation.as_mut() {

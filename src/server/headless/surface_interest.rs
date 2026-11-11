@@ -39,6 +39,7 @@ impl HeadlessServer {
                 client.host_mouse_capture_active = None;
                 client.host_sgr_pixels_active = None;
                 client.host_keyboard_report_all_active = None;
+                client.presence_peers_sent = None;
             }
             client.clear_deferred_render();
             if !active {

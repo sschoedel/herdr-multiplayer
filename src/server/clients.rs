@@ -64,6 +64,12 @@ pub(crate) enum DeferredRender {
 pub(crate) struct ClientShellLocation {
     pub(crate) focused_workspace_id: Option<String>,
     pub(crate) active_tab_ids: HashMap<String, String>,
+    /// Connection-local focused pane per tab, keyed by public tab id.
+    ///
+    /// Each shell connection keeps its own pane focus so several people attached to one
+    /// session can work in different panes of the same tab. A missing or stale entry falls
+    /// back to the tab layout's focus, and zoomed tabs always use the layout's focus.
+    pub(crate) focused_pane_ids: HashMap<String, String>,
 }
 
 pub(crate) struct ClientShellTopology {
@@ -71,6 +77,17 @@ pub(crate) struct ClientShellTopology {
     pub(crate) fallback_workspace_id: Option<String>,
     pub(crate) active_tab_ids: HashMap<String, String>,
     pub(crate) tab_workspace_ids: HashMap<String, String>,
+    /// Layout focus per public tab id.
+    pub(crate) layout_focused_pane_ids: HashMap<String, String>,
+    /// Owning public tab id per public pane id.
+    pub(crate) pane_tab_ids: HashMap<String, String>,
+}
+
+/// What one shell connection last published about itself to its peers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ClientPresence {
+    pub(crate) name: String,
+    pub(crate) pointer: Option<crate::protocol::endpoint::EndpointPresencePosition>,
 }
 
 impl ClientShellLocation {
@@ -87,6 +104,26 @@ impl ClientShellLocation {
                     )
                 })
                 .collect(),
+            focused_pane_ids: snapshot
+                .focused_tab_id
+                .clone()
+                .zip(snapshot.focused_pane_id.clone())
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    pub(crate) fn focus_pane(&mut self, tab_id: String, pane_id: String) {
+        self.focused_pane_ids.insert(tab_id, pane_id);
+    }
+
+    /// Records the layout focus for tabs this connection has not focused yet, so a later
+    /// focus change made by another connection does not move this one.
+    pub(crate) fn pin_missing_pane_focus(&mut self, topology: &ClientShellTopology) {
+        for (tab_id, pane_id) in &topology.layout_focused_pane_ids {
+            self.focused_pane_ids
+                .entry(tab_id.clone())
+                .or_insert_with(|| pane_id.clone());
         }
     }
 
@@ -116,6 +153,9 @@ impl ClientShellLocation {
                 .entry(workspace_id.clone())
                 .or_insert_with(|| tab_id.clone());
         }
+        self.focused_pane_ids
+            .retain(|tab_id, pane_id| topology.pane_tab_ids.get(pane_id) == Some(tab_id));
+        self.pin_missing_pane_focus(topology);
         if self
             .focused_workspace_id
             .as_ref()
@@ -192,6 +232,10 @@ pub(crate) struct ClientConnection {
     pub(crate) shell_deferred_navigation_response: Option<Vec<u8>>,
     /// Whether this shell uses the endpoint-owned keymap rather than a client-owned keymap.
     pub(crate) shell_uses_endpoint_keybindings: bool,
+    /// Name and pointer this shell published for its peers, once it has published any.
+    pub(crate) presence: Option<ClientPresence>,
+    /// Last peer list sent to this shell.
+    pub(crate) presence_peers_sent: Option<crate::protocol::endpoint::EndpointPresencePeers>,
     /// Channels for sending framed ServerMessage data to the client writer thread.
     pub(crate) writer: Option<ClientWriter>,
 }
@@ -255,6 +299,8 @@ impl ClientConnection {
             shell_deferred_navigation_request_id: None,
             shell_deferred_navigation_response: None,
             shell_uses_endpoint_keybindings: false,
+            presence: None,
+            presence_peers_sent: None,
             writer,
         }
     }

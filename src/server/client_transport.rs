@@ -520,6 +520,11 @@ pub(crate) enum ServerEvent {
     ClientShellFocus { client_id: u64, focused: bool },
     /// A client-owned shell updated its local mouse-capture preference.
     ClientShellMouseCapture { client_id: u64, enabled: bool },
+    /// A client-owned shell published its display name and pointer for its peers.
+    ClientShellPresence {
+        client_id: u64,
+        presence: crate::protocol::endpoint::EndpointPresencePointer,
+    },
     /// The committed shell asks the server to replay presentation effects before input resumes.
     ClientShellPresentationSync { client_id: u64, token: String },
     /// A client-owned shell invoked one endpoint operation through this connection.
@@ -1344,6 +1349,22 @@ fn client_read_loop_with_endpoint_controls(
                 ServerEvent::ClientShellPresentationSync {
                     client_id,
                     token: data,
+                }
+            }
+            ClientMessage::EndpointControl { kind, data }
+                if kind == crate::protocol::endpoint::PRESENCE_POINTER_KIND =>
+            {
+                match serde_json::from_str::<crate::protocol::endpoint::EndpointPresencePointer>(
+                    &data,
+                ) {
+                    Ok(presence) => ServerEvent::ClientShellPresence {
+                        client_id,
+                        presence,
+                    },
+                    Err(err) => {
+                        debug!(client_id, err = %err, "ignoring malformed presence update");
+                        continue;
+                    }
                 }
             }
             ClientMessage::EndpointControl { kind, data } => {

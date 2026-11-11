@@ -31,6 +31,77 @@ pub const AGENT_VIEW_PROJECTION_CAPABILITY: &str = "agent_view_projection";
 pub const AGENT_VIEW_PROJECTION_KIND: &str = "endpoint.agent-view.v1";
 pub const AGENT_COMPLETIONS_CAPABILITY: &str = "agent_completions";
 pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
+/// Shared-session presence: clients publish their pointer and receive their peers.
+pub const PRESENCE_CAPABILITY: &str = "presence";
+/// Client to server: this connection's display name and pane-relative pointer.
+pub const PRESENCE_POINTER_KIND: &str = "endpoint.presence.pointer.v1";
+/// Server to client: every other shell connection's pointer and focused pane.
+pub const PRESENCE_PEERS_KIND: &str = "endpoint.presence.peers.v1";
+/// Longest display name an endpoint relays to peers, in characters.
+pub const PRESENCE_NAME_MAX_CHARS: usize = 24;
+
+/// One pointer position, relative to a pane's content area.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointPresencePosition {
+    pub pane_id: String,
+    pub col: u16,
+    pub row: u16,
+}
+
+/// Client-published presence for one shell connection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointPresencePointer {
+    #[serde(default)]
+    pub name: String,
+    /// `None` when the pointer is outside every pane's content area.
+    #[serde(default)]
+    pub pointer: Option<EndpointPresencePosition>,
+}
+
+/// Another shell connection attached to the same endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointPresencePeer {
+    pub peer_id: u64,
+    pub name: String,
+    #[serde(default)]
+    pub pointer: Option<EndpointPresencePosition>,
+    #[serde(default)]
+    pub focused_pane_id: Option<String>,
+}
+
+/// Full replacement of the peers visible to one connection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointPresencePeers {
+    #[serde(default)]
+    pub peers: Vec<EndpointPresencePeer>,
+}
+
+/// Trim, strip control characters, and bound a peer-supplied display name.
+pub fn sanitize_presence_name(name: &str) -> String {
+    name.chars()
+        .filter(|ch| !ch.is_control())
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(PRESENCE_NAME_MAX_CHARS)
+        .collect()
+}
+
+pub fn presence_pointer_message(
+    pointer: &EndpointPresencePointer,
+) -> serde_json::Result<super::ClientMessage> {
+    Ok(super::ClientMessage::EndpointControl {
+        kind: PRESENCE_POINTER_KIND.into(),
+        data: serde_json::to_string(pointer)?,
+    })
+}
+
+pub fn presence_peers_message(peers: &EndpointPresencePeers) -> serde_json::Result<ServerMessage> {
+    Ok(ServerMessage::EndpointControl {
+        kind: PRESENCE_PEERS_KIND.into(),
+        data: serde_json::to_string(peers)?,
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointAgentCompletions {
@@ -174,6 +245,7 @@ impl EndpointServerWelcome {
                 HEALTH_CHECK_CAPABILITY.into(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
+                PRESENCE_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -385,8 +457,65 @@ mod tests {
                 HEALTH_CHECK_CAPABILITY.to_string(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
+                PRESENCE_CAPABILITY.to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn presence_messages_round_trip_and_tolerate_missing_fields() {
+        let pointer = EndpointPresencePointer {
+            name: "sam".into(),
+            pointer: Some(EndpointPresencePosition {
+                pane_id: "w1:p2".into(),
+                col: 4,
+                row: 9,
+            }),
+        };
+        let super::super::ClientMessage::EndpointControl { kind, data } =
+            presence_pointer_message(&pointer).unwrap()
+        else {
+            panic!("presence pointer should use endpoint control");
+        };
+        assert_eq!(kind, PRESENCE_POINTER_KIND);
+        assert_eq!(
+            serde_json::from_str::<EndpointPresencePointer>(&data).unwrap(),
+            pointer
+        );
+        assert_eq!(
+            serde_json::from_str::<EndpointPresencePointer>("{}").unwrap(),
+            EndpointPresencePointer::default()
+        );
+
+        let peers = EndpointPresencePeers {
+            peers: vec![EndpointPresencePeer {
+                peer_id: 3,
+                name: "alex".into(),
+                pointer: None,
+                focused_pane_id: Some("w1:p1".into()),
+            }],
+        };
+        let ServerMessage::EndpointControl { kind, data } = presence_peers_message(&peers).unwrap()
+        else {
+            panic!("presence peers should use endpoint control");
+        };
+        assert_eq!(kind, PRESENCE_PEERS_KIND);
+        let mut value = serde_json::from_str::<serde_json::Value>(&data).unwrap();
+        value["future"] = serde_json::json!(true);
+        assert_eq!(
+            serde_json::from_value::<EndpointPresencePeers>(value).unwrap(),
+            peers
+        );
+    }
+
+    #[test]
+    fn presence_names_are_trimmed_bounded_and_printable() {
+        assert_eq!(sanitize_presence_name("  sam\u{1b}[31m \n"), "sam[31m");
+        assert_eq!(
+            sanitize_presence_name(&"x".repeat(100)).chars().count(),
+            PRESENCE_NAME_MAX_CHARS
+        );
+        assert_eq!(sanitize_presence_name(" \t "), "");
     }
 
     #[test]

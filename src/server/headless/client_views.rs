@@ -103,6 +103,8 @@ impl HeadlessServer {
             .map(|_| self.app.public_workspace_id(0));
         let mut active_tab_ids = HashMap::new();
         let mut tab_workspace_ids = HashMap::new();
+        let mut layout_focused_pane_ids = HashMap::new();
+        let mut pane_tab_ids = HashMap::new();
         for (workspace_index, workspace) in self.app.state.workspaces.iter().enumerate() {
             let workspace_id = self.app.public_workspace_id(workspace_index);
             if let Some(tab_id) = self
@@ -111,9 +113,21 @@ impl HeadlessServer {
             {
                 active_tab_ids.insert(workspace_id.clone(), tab_id);
             }
-            for tab_index in 0..workspace.tabs.len() {
-                if let Some(tab_id) = self.app.public_tab_id(workspace_index, tab_index) {
-                    tab_workspace_ids.insert(tab_id, workspace_id.clone());
+            for (tab_index, tab) in workspace.tabs.iter().enumerate() {
+                let Some(tab_id) = self.app.public_tab_id(workspace_index, tab_index) else {
+                    continue;
+                };
+                tab_workspace_ids.insert(tab_id.clone(), workspace_id.clone());
+                if let Some(pane_id) = self
+                    .app
+                    .public_pane_id(workspace_index, tab.layout.focused())
+                {
+                    layout_focused_pane_ids.insert(tab_id.clone(), pane_id);
+                }
+                for &pane_id in tab.panes.keys() {
+                    if let Some(pane_id) = self.app.public_pane_id(workspace_index, pane_id) {
+                        pane_tab_ids.insert(pane_id, tab_id.clone());
+                    }
                 }
             }
         }
@@ -122,7 +136,163 @@ impl HeadlessServer {
             fallback_workspace_id,
             active_tab_ids,
             tab_workspace_ids,
+            layout_focused_pane_ids,
+            pane_tab_ids,
         }
+    }
+
+    /// Layout focus per public tab id.
+    fn layout_pane_focus_by_tab(&self) -> HashMap<String, String> {
+        let mut focus = HashMap::new();
+        for (workspace_index, workspace) in self.app.state.workspaces.iter().enumerate() {
+            for (tab_index, tab) in workspace.tabs.iter().enumerate() {
+                let Some(tab_id) = self.app.public_tab_id(workspace_index, tab_index) else {
+                    continue;
+                };
+                if let Some(pane_id) = self
+                    .app
+                    .public_pane_id(workspace_index, tab.layout.focused())
+                {
+                    focus.insert(tab_id, pane_id);
+                }
+            }
+        }
+        focus
+    }
+
+    /// The pane this shell connection treats as focused in `target`.
+    pub(super) fn shell_client_tab_focus(
+        &self,
+        client_id: u64,
+        target: crate::ui::TabSurfaceTarget,
+    ) -> Option<crate::layout::PaneId> {
+        crate::server::client_shell::projected_tab_focus(
+            &self.app,
+            self.clients
+                .get(&client_id)
+                .and_then(|client| client.shell_location.as_ref()),
+            target.workspace_index,
+            target.tab_index,
+        )
+    }
+
+    /// Freezes every shell connection's current pane focus before one connection acts, so
+    /// that connection's focus changes do not move anyone else.
+    fn pin_shell_client_pane_focus(&mut self) {
+        if self
+            .clients
+            .values()
+            .filter(|client| client.is_shell_client())
+            .count()
+            < 2
+        {
+            return;
+        }
+        let topology = self.client_shell_topology();
+        for client in self
+            .clients
+            .values_mut()
+            .filter(|client| client.is_shell_client())
+        {
+            if let Some(location) = client.shell_location.as_mut() {
+                location.pin_missing_pane_focus(&topology);
+            }
+        }
+    }
+
+    /// Moves the shared layout focus of this connection's tab to the connection's own pane
+    /// focus, so focus-relative operations (split, close, directional focus, zoom) act on
+    /// the pane this person is working in.
+    fn project_shell_client_pane_focus(&mut self, client_id: u64) {
+        let Some(target) = self.shell_target_for_client(client_id) else {
+            return;
+        };
+        let Some(pane_id) = self.shell_client_tab_focus(client_id, target) else {
+            return;
+        };
+        if let Some(tab) = self
+            .app
+            .state
+            .workspaces
+            .get_mut(target.workspace_index)
+            .and_then(|workspace| workspace.tabs.get_mut(target.tab_index))
+        {
+            tab.layout.project_focus(pane_id);
+        }
+    }
+
+    /// Records the pane focus changes made by one connection's request as that connection's
+    /// own focus.
+    fn record_shell_client_pane_focus(
+        &mut self,
+        client_id: u64,
+        layout_focus_before: &HashMap<String, String>,
+    ) {
+        let layout_focus_after = self.layout_pane_focus_by_tab();
+        let Some(location) = self
+            .clients
+            .get_mut(&client_id)
+            .and_then(|client| client.shell_location.as_mut())
+        else {
+            return;
+        };
+        for (tab_id, pane_id) in layout_focus_after {
+            let changed = layout_focus_before.get(&tab_id) != Some(&pane_id);
+            if changed || !location.focused_pane_ids.contains_key(&tab_id) {
+                location.focus_pane(tab_id, pane_id);
+            }
+        }
+    }
+
+    /// Applies layout focus changes made outside any one shell connection (the public
+    /// socket API, scripts, agents). A connection follows when it was on the old layout focus
+    /// or its pane is gone, which is exactly single-viewer behavior; someone working in
+    /// another pane of the tab stays put.
+    fn propagate_layout_pane_focus_changes(
+        &mut self,
+        layout_focus_before: &HashMap<String, String>,
+    ) {
+        let layout_focus_after = self.layout_pane_focus_by_tab();
+        let changed = layout_focus_after
+            .into_iter()
+            .filter(|(tab_id, pane_id)| layout_focus_before.get(tab_id) != Some(pane_id))
+            .collect::<Vec<_>>();
+        if changed.is_empty() {
+            return;
+        }
+        let topology = self.client_shell_topology();
+        for client in self
+            .clients
+            .values_mut()
+            .filter(|client| client.is_shell_client())
+        {
+            let Some(location) = client.shell_location.as_mut() else {
+                continue;
+            };
+            for (tab_id, pane_id) in &changed {
+                let follows = location.focused_pane_ids.get(tab_id).is_none_or(|current| {
+                    layout_focus_before.get(tab_id) == Some(current)
+                        || topology.pane_tab_ids.get(current) != Some(tab_id)
+                });
+                if follows {
+                    location.focus_pane(tab_id.clone(), pane_id.clone());
+                }
+            }
+        }
+    }
+
+    /// Whether a focused shell connection, other than `except`, works in `target`.
+    pub(super) fn shell_focus_target_has_focused_viewer(
+        &self,
+        target: &ShellFocusTarget,
+        except: Option<u64>,
+    ) -> bool {
+        self.clients.iter().any(|(&client_id, client)| {
+            Some(client_id) != except
+                && client.is_active_shell_client()
+                && client.outer_terminal_focus == Some(true)
+                && self.shell_focus_target(client_id).as_ref() == Some(target)
+        })
     }
 
     pub(super) fn reconcile_client_shell_locations(&mut self) {
@@ -154,6 +324,7 @@ impl HeadlessServer {
                 crate::server::clients::ClientShellLocation {
                     focused_workspace_id: topology.focused_workspace_id.clone(),
                     active_tab_ids: topology.active_tab_ids.clone(),
+                    focused_pane_ids: topology.layout_focused_pane_ids.clone(),
                 }
             });
             location.reconcile(&topology);
@@ -168,6 +339,17 @@ impl HeadlessServer {
         let Some(tab_id) = self.tab_id_for_target(target) else {
             return;
         };
+        // An explicit public focus request moves everyone, including their pane focus.
+        let layout_pane_id = self
+            .app
+            .state
+            .workspaces
+            .get(target.workspace_index)
+            .and_then(|workspace| workspace.tabs.get(target.tab_index))
+            .and_then(|tab| {
+                self.app
+                    .public_pane_id(target.workspace_index, tab.layout.focused())
+            });
         let focus_before = self.shell_focus_targets();
         let focused_tabs_before = self.focused_shell_tabs();
         for client in self
@@ -177,6 +359,9 @@ impl HeadlessServer {
         {
             if let Some(location) = client.shell_location.as_mut() {
                 location.focus_tab(workspace_id.clone(), tab_id.clone());
+                if let Some(pane_id) = layout_pane_id.as_ref() {
+                    location.focus_pane(tab_id.clone(), pane_id.clone());
+                }
             }
         }
         let (lost, gained) =
@@ -366,28 +551,13 @@ impl HeadlessServer {
         }
     }
 
-    fn focus_target_for_surface(
-        &self,
-        target: crate::ui::TabSurfaceTarget,
-    ) -> Option<ShellFocusTarget> {
-        let pane_id = self
-            .app
-            .state
-            .workspaces
-            .get(target.workspace_index)?
-            .tabs
-            .get(target.tab_index)?
-            .layout
-            .focused();
+    pub(super) fn shell_focus_target(&self, client_id: u64) -> Option<ShellFocusTarget> {
+        let target = self.shell_target_for_client(client_id)?;
         Some(ShellFocusTarget {
             tab_id: self.tab_id_for_target(target)?,
             workspace_index: target.workspace_index,
-            pane_id,
+            pane_id: self.shell_client_tab_focus(client_id, target)?,
         })
-    }
-
-    pub(super) fn shell_focus_target(&self, client_id: u64) -> Option<ShellFocusTarget> {
-        self.focus_target_for_surface(self.shell_target_for_client(client_id)?)
     }
 
     pub(super) fn focused_shell_tabs(&self) -> HashSet<String> {
@@ -455,7 +625,9 @@ impl HeadlessServer {
         gained: &HashMap<String, ShellFocusTarget>,
     ) {
         for target in lost.values() {
-            self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
+            if !self.shell_focus_target_has_focused_viewer(target, None) {
+                self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
+            }
         }
         for target in gained.values() {
             self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Gained);
@@ -482,7 +654,9 @@ impl HeadlessServer {
     ) {
         let (lost, gained) =
             classify_shell_focus_transition(before, after, focused_tabs_before, focused_tabs_after);
-        if let Some(target) = lost {
+        if let Some(target) =
+            lost.filter(|target| !self.shell_focus_target_has_focused_viewer(target, None))
+        {
             self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
         }
         if let Some(target) = gained {
@@ -562,17 +736,61 @@ impl HeadlessServer {
         true
     }
 
+    pub(super) fn sizes_shared_tabs_to_smallest(&self) -> bool {
+        self.app.state.shared_tab_size == crate::config::SharedTabSizeConfig::Smallest
+    }
+
+    /// Surface size and cell size to lay `target` out at when `client_id` drives its geometry.
+    ///
+    /// With the `smallest` policy every active viewer of the tab fits, and the result does not
+    /// depend on which viewer triggered it, so alternating input never resizes the panes.
+    fn shell_tab_geometry(
+        &self,
+        client_id: u64,
+        target: crate::ui::TabSurfaceTarget,
+    ) -> Option<((u16, u16), crate::kitty_graphics::HostCellSize)> {
+        let client = self.clients.get(&client_id)?;
+        let own = (client.terminal_size, client.cell_size);
+        if !self.sizes_shared_tabs_to_smallest() {
+            return Some(own);
+        }
+        let Some(tab_id) = self.tab_id_for_target(target) else {
+            return Some(own);
+        };
+        let mut viewers = self
+            .clients
+            .iter()
+            .filter(|(&viewer_id, viewer)| {
+                viewer_id == client_id
+                    || (viewer.is_active_shell_client()
+                        && viewer.writer.is_some()
+                        && self.shell_tab_id_for_client(viewer_id).as_deref()
+                            == Some(tab_id.as_str()))
+            })
+            .collect::<Vec<_>>();
+        viewers.sort_unstable_by_key(|(&viewer_id, _)| viewer_id);
+        let size = viewers
+            .iter()
+            .map(|(_, viewer)| viewer.terminal_size)
+            .reduce(|left, right| (left.0.min(right.0), left.1.min(right.1)))?;
+        let cell_size = viewers
+            .iter()
+            .map(|(_, viewer)| viewer.cell_size)
+            .find(|cell_size| cell_size.is_known())
+            .unwrap_or(client.cell_size);
+        Some((size, cell_size))
+    }
+
     fn resize_shell_tab_geometry_to_target(
         &mut self,
         client_id: u64,
         target: crate::ui::TabSurfaceTarget,
     ) -> bool {
-        let Some(client) = self.clients.get(&client_id) else {
+        let Some(((cols, rows), cell_size)) = self.shell_tab_geometry(client_id, target) else {
             return false;
         };
-        let (cols, rows) = client.terminal_size;
-        let cell_size = if client.cell_size.is_known() {
-            client.cell_size
+        let cell_size = if cell_size.is_known() {
+            cell_size
         } else {
             crate::kitty_graphics::HostCellSize::default()
         };
@@ -748,7 +966,10 @@ impl HeadlessServer {
         let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
             return false;
         };
-        if self.tab_geometry_controllers.get(&tab_id) != Some(&client_id) {
+        // Under `smallest`, any viewer's resize can change the size every viewer must fit.
+        if self.tab_geometry_controllers.get(&tab_id) != Some(&client_id)
+            && !self.sizes_shared_tabs_to_smallest()
+        {
             return false;
         }
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
@@ -864,7 +1085,9 @@ impl HeadlessServer {
             (original, proxy_rx)
         });
         let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
+        let layout_focus_before = self.layout_pane_focus_by_tab();
         let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, false);
+        self.propagate_layout_pane_focus_changes(&layout_focus_before);
         let proxied_result = forward_proxied_api_response(response_proxy);
         let proxied_request_succeeded = proxied_result.is_some();
         // Same-tab and zoomed moves succeed without moving or requesting focus.
@@ -920,10 +1143,14 @@ impl HeadlessServer {
         let navigation_changed =
             self.apply_shell_navigation_request(client_id, &msg.request.method);
         self.set_default_shell_target_from_client(client_id);
+        self.pin_shell_client_pane_focus();
+        self.project_shell_client_pane_focus(client_id);
+        let layout_focus_before = self.layout_pane_focus_by_tab();
         let popup_before = self.app.state.popup_pane.is_some();
         let popup_owner = self.shell_tab_id_for_client(client_id);
         let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, true);
         self.focus_shell_client_on_default_target(client_id);
+        self.record_shell_client_pane_focus(client_id, &layout_focus_before);
         if !popup_before && self.app.state.popup_pane.is_some() {
             self.popup_owner_tab_id = popup_owner;
         }
@@ -944,13 +1171,17 @@ impl HeadlessServer {
             );
         }
         if focus_before != focus_after {
-            if let Some(target) = focus_after {
+            if let Some(target) = focus_after.as_ref() {
                 self.app
                     .emit_focus_api_events(target.workspace_index, target.pane_id);
             }
         }
+        // Under `smallest`, leaving a tab can let the viewers who remain grow it back.
+        let left_tab = self.sizes_shared_tabs_to_smallest()
+            && focus_before.as_ref().map(|target| &target.tab_id)
+                != focus_after.as_ref().map(|target| &target.tab_id);
         let geometry_changed = method_claims_geometry
-            && if reconcile {
+            && if reconcile || left_tab {
                 self.reapply_controlled_shell_tab_geometry(false)
             } else {
                 self.claim_shell_tab_geometry(client_id, false)

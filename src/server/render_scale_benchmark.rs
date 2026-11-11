@@ -94,6 +94,7 @@ impl RenderPipeline {
             },
             &self.graphics_delivery,
             1,
+            None,
         )
         .expect("benchmark surface");
         let server_elapsed = started.elapsed();
@@ -496,6 +497,7 @@ fn print_surface_damage_profiles() {
             HostCellSize::default(),
             &pipeline.graphics_delivery,
             1,
+            None,
         )
         .expect("benchmark surface");
         let mut surface = PaneSurfaceFrame {
@@ -548,6 +550,7 @@ fn print_surface_reuse_profiles() {
                 HostCellSize::default(),
                 &pipeline.graphics_delivery,
                 1,
+                None,
             )
             .expect("benchmark surface");
             let surface = PaneSurfaceFrame {

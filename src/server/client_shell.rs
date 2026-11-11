@@ -3,6 +3,41 @@ use ratatui::layout::Rect;
 use crate::app;
 use crate::protocol::{self, FrameData};
 
+/// The pane one shell connection treats as focused in a tab.
+///
+/// Connections keep independent pane focus so several people can work in different panes
+/// of a shared tab. A zoomed tab shows exactly one pane, so zoom keeps the shared layout
+/// focus; so does a connection with no live focus recorded for the tab.
+pub(crate) fn projected_tab_focus(
+    app: &app::App,
+    location: Option<&crate::server::clients::ClientShellLocation>,
+    workspace_index: usize,
+    tab_index: usize,
+) -> Option<crate::layout::PaneId> {
+    let tab = app
+        .state
+        .workspaces
+        .get(workspace_index)?
+        .tabs
+        .get(tab_index)?;
+    let layout_focus = tab.layout.focused();
+    if tab.zoomed {
+        return Some(layout_focus);
+    }
+    let pinned = location
+        .filter(|location| !location.focused_pane_ids.is_empty())
+        .and_then(|location| {
+            let tab_id = app.public_tab_id(workspace_index, tab_index)?;
+            location.focused_pane_ids.get(&tab_id)
+        })
+        .and_then(|pane_id| app.parse_pane_id(pane_id))
+        .filter(|&(pane_workspace_index, pane_id)| {
+            pane_workspace_index == workspace_index && tab.panes.contains_key(&pane_id)
+        })
+        .map(|(_, pane_id)| pane_id);
+    Some(pinned.unwrap_or(layout_focus))
+}
+
 #[cfg(test)]
 pub(super) fn snapshot(
     app: &app::App,
@@ -44,14 +79,7 @@ pub(super) fn snapshot_with_completions(
         .as_deref()
         .and_then(|tab_id| app.parse_tab_id(tab_id))
         .and_then(|(workspace_index, tab_index)| {
-            let pane_id = app
-                .state
-                .workspaces
-                .get(workspace_index)?
-                .tabs
-                .get(tab_index)?
-                .layout
-                .focused();
+            let pane_id = projected_tab_focus(app, location, workspace_index, tab_index)?;
             app.public_pane_id(workspace_index, pane_id)
         })
         .or_else(|| snapshot.focused_pane_id.clone());
@@ -292,8 +320,9 @@ pub(super) fn render_pane_surface(
     cell_size: crate::kitty_graphics::HostCellSize,
     graphics_delivery: &crate::kitty_graphics::surface::DeliveryCache,
     client_id: u64,
+    focus_override: Option<crate::layout::PaneId>,
 ) -> Result<RenderedPaneSurface, SurfaceRenderDeferred> {
-    let layout = crate::ui::compute_tab_surface_for(
+    let mut layout = crate::ui::compute_tab_surface_for(
         &app.state,
         &app.terminal_runtimes,
         target,
@@ -301,6 +330,15 @@ pub(super) fn render_pane_surface(
         resize_panes,
         cell_size,
     );
+    // Project this connection's own pane focus onto the shared layout. Borders, the
+    // focused split highlight, and the host cursor all follow `is_focused`.
+    if let Some(focus) =
+        focus_override.filter(|focus| layout.pane_infos.iter().any(|pane| pane.id == *focus))
+    {
+        for pane in &mut layout.pane_infos {
+            pane.is_focused = pane.id == focus;
+        }
+    }
     let mut content_revisions_before = std::collections::HashMap::new();
     if let Some(target) = target {
         for pane in &layout.pane_infos {

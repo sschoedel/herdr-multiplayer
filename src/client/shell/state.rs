@@ -43,6 +43,10 @@ pub(crate) struct ClientShellConfig {
     pub(super) confirm_close: bool,
     pub(super) mouse_capture: bool,
     pub(super) mouse_scroll_lines: usize,
+    /// Name shown to other people attached to the same endpoint.
+    pub(super) presence_name: String,
+    /// Draw other attached people's pointers and focused panes.
+    pub(super) show_peer_cursors: bool,
     pub(super) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
     pub(super) redraw_on_focus_gained: bool,
     pub(super) switch_ascii_input_source_in_prefix: bool,
@@ -895,6 +899,17 @@ pub(crate) struct ClientShellState {
     pub(super) last_composed_size: Option<(u16, u16)>,
     pub(super) last_composed_at: Option<std::time::Instant>,
     pub(super) selection_repaint_deadline: Option<std::time::Instant>,
+    /// Other people attached to each endpoint, as last published by that endpoint.
+    pub(super) peer_presence: HashMap<ClientEndpointId, presence::PeerPresence>,
+    /// This shell's own pane-relative pointer, as last observed.
+    pub(super) presence_pointer: Option<crate::protocol::endpoint::EndpointPresencePosition>,
+    /// Pointer last published to the active endpoint, for dedupe.
+    pub(super) presence_pointer_sent:
+        Option<Option<crate::protocol::endpoint::EndpointPresencePosition>>,
+    /// Endpoint connection that already received this shell's presence announcement.
+    pub(super) presence_announced: Option<(ClientEndpointId, u64)>,
+    /// When the earliest visible peer name label should disappear.
+    pub(super) presence_label_deadline: Option<std::time::Instant>,
     pub(super) hits: ShellHitMap,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
     pub(super) active_endpoint_id: ClientEndpointId,
@@ -1069,6 +1084,11 @@ impl ClientShellState {
             last_composed_size: None,
             last_composed_at: None,
             selection_repaint_deadline: None,
+            peer_presence: HashMap::new(),
+            presence_pointer: None,
+            presence_pointer_sent: None,
+            presence_announced: None,
+            presence_label_deadline: None,
             hits: ShellHitMap::default(),
             endpoints: vec![local_endpoint()],
             active_endpoint_id: ClientEndpointId::Local,
@@ -1883,6 +1903,7 @@ impl ClientShellState {
         self.selection_autoscroll_deadline
             .into_iter()
             .chain(self.selection_repaint_deadline)
+            .chain(self.presence_label_deadline)
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

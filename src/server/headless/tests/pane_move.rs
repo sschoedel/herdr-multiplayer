@@ -187,7 +187,16 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
         let (_source_control, _source_render) = connect_test_shell(&mut server, 10, 80, 23);
         // Keep a valid view distinct from the server default in every case.
         assert!(server.focus_shell_client_on_tab(9, &remaining_tab));
-        let location_before = server.clients[&9].shell_location.clone();
+        // Pane focus bookkeeping may drop entries for closed tabs; the view is what must hold.
+        let view = |location: Option<&crate::server::clients::ClientShellLocation>| {
+            location.map(|location| {
+                (
+                    location.focused_workspace_id.clone(),
+                    location.active_tab_ids.clone(),
+                )
+            })
+        };
+        let location_before = view(server.clients[&9].shell_location.as_ref());
         let revision_before = server.clients[&9].shell_projection_revision;
         if case == "zoomed" {
             server.app.state.workspaces[0].tabs[0].zoomed = true;
@@ -215,7 +224,11 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
         } else {
             assert_eq!(result.unwrap().changed, case == "no-focus");
         }
-        assert_eq!(server.clients[&9].shell_location, location_before, "{case}");
+        assert_eq!(
+            view(server.clients[&9].shell_location.as_ref()),
+            location_before,
+            "{case}"
+        );
         assert_eq!(
             server.clients[&9].shell_projection_revision, revision_before,
             "{case}"

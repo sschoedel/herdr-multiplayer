@@ -947,6 +947,28 @@
           "description": "Lines to scroll per mouse wheel notch."
         },
         {
+          "key": "ui.presence_name",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Name shown to other people attached to the same Herdr session. Empty uses your login name."
+        },
+        {
+          "key": "ui.show_peer_cursors",
+          "type": "boolean",
+          "default": "true",
+          "description": "Draw other attached people's mouse pointers and focused panes."
+        },
+        {
+          "key": "ui.shared_tab_size",
+          "type": "enum",
+          "default": "\"latest\"",
+          "description": "How a tab is sized while several clients view it at once. \"latest\" sizes it to whoever interacted last; \"smallest\" fits every viewer so nobody's input resizes panes under someone else.",
+          "values": [
+            "latest",
+            "smallest"
+          ]
+        },
+        {
           "key": "ui.confirm_close",
           "type": "boolean",
           "default": "true",

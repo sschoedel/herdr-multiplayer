@@ -872,6 +872,17 @@ pub struct WorktreesConfig {
     pub directory: String,
 }
 
+/// How a tab is sized while several people view it at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedTabSizeConfig {
+    /// Size to whichever viewer interacted most recently.
+    #[default]
+    Latest,
+    /// Size to fit every viewer, so nobody's input resizes the panes under someone else.
+    Smallest,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TabBarPositionConfig {
@@ -960,6 +971,13 @@ pub struct UiConfig {
     pub redraw_on_focus_gained: bool,
     /// Lines to scroll per mouse wheel notch. Default: 3.
     pub mouse_scroll_lines: Option<NonZeroUsize>,
+    /// Name shown to other people attached to the same Herdr session. Empty uses the local
+    /// login name. Default: "".
+    pub presence_name: String,
+    /// Draw other attached people's pointers and focused panes. Default: true.
+    pub show_peer_cursors: bool,
+    /// Server-side sizing of a tab several clients view at once. Default: latest.
+    pub shared_tab_size: SharedTabSizeConfig,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
     /// Ask for a tab name before creating a new tab. Default: true.
@@ -1210,6 +1228,9 @@ impl Default for UiConfig {
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
+            presence_name: String::new(),
+            show_peer_cursors: true,
+            shared_tab_size: SharedTabSizeConfig::Latest,
             confirm_close: true,
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
@@ -1243,6 +1264,20 @@ impl UiConfig {
 
     pub fn right_click_passthrough_modifiers(&self) -> Option<KeyModifiers> {
         self.right_click_passthrough_modifier.modifiers()
+    }
+
+    /// The presence name this client publishes: the configured name, else the login name.
+    pub fn resolved_presence_name(&self) -> String {
+        let configured = crate::protocol::endpoint::sanitize_presence_name(&self.presence_name);
+        if !configured.is_empty() {
+            return configured;
+        }
+        ["USER", "USERNAME", "LOGNAME"]
+            .into_iter()
+            .filter_map(|key| std::env::var(key).ok())
+            .map(|name| crate::protocol::endpoint::sanitize_presence_name(&name))
+            .find(|name| !name.is_empty())
+            .unwrap_or_else(|| "guest".to_owned())
     }
 }
 
@@ -1745,6 +1780,38 @@ mouse_capture = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.mouse_capture);
+    }
+
+    #[test]
+    fn presence_settings_default_and_parse() {
+        let default_config = Config::default();
+        assert!(default_config.ui.show_peer_cursors);
+        assert!(default_config.ui.presence_name.is_empty());
+        assert!(!default_config.ui.resolved_presence_name().is_empty());
+
+        let config: Config = toml::from_str(
+            r#"
+[ui]
+presence_name = "  pairing partner  "
+show_peer_cursors = false
+"#,
+        )
+        .unwrap();
+        assert!(!config.ui.show_peer_cursors);
+        assert_eq!(config.ui.resolved_presence_name(), "pairing partner");
+        assert_eq!(
+            default_config.ui.shared_tab_size,
+            SharedTabSizeConfig::Latest
+        );
+
+        let config: Config = toml::from_str(
+            r#"
+[ui]
+shared_tab_size = "smallest"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.ui.shared_tab_size, SharedTabSizeConfig::Smallest);
     }
 
     #[test]

@@ -2113,6 +2113,28 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            Ok(endpoint::EndpointControlMessage::Presence(peers)) => {
+                                let (cols, rows) = state.reported_size;
+                                let frame = state.shell.as_mut().and_then(|shell| {
+                                    shell
+                                        .set_endpoint_presence(&endpoint_id, generation, peers)
+                                        .then(|| shell.compose(cols, rows))
+                                        .flatten()
+                                });
+                                if finish_client_shell_input(
+                                    &mut state,
+                                    shell::ClientShellInput::default(),
+                                    frame,
+                                    &mut write_stream,
+                                    &mut pending_activation,
+                                    &mut endpoint_commands,
+                                    &mut prefix_input_source,
+                                    &mut scheduled_activation,
+                                )? {
+                                    return Ok(());
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;
@@ -2325,7 +2347,8 @@ async fn run_client_loop(
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)
                             | shell.tick_workspace_highlight(now)
-                            | shell.tick_endpoint_error(now);
+                            | shell.tick_endpoint_error(now)
+                            | shell.tick_peer_presence(now);
                         let frame = outcome
                             .repaint
                             .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
