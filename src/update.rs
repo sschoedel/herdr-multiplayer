@@ -25,6 +25,13 @@ use serde::{Deserialize, Deserializer};
 const STABLE_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/latest.json";
 const PREVIEW_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/preview.json";
 const HOMEBREW_FORMULA_API_URL: &str = "https://formulae.brew.sh/api/formula/herdr.json";
+/// herdr-multiplayer updates come from the fork's own moving release, not herdr.dev.
+const FORK_UPDATE_MANIFEST_URL: &str =
+    "https://github.com/sschoedel/herdr-multiplayer/releases/download/fork-latest/fork-latest.json";
+/// Set to update from official herdr releases instead of the fork.
+const UPSTREAM_UPDATES_ENV: &str = "HERDR_UPSTREAM_UPDATES";
+/// Fork release labels look like `0.9.5+mp.1a2b3c4d`; the binaries still report `0.9.5`.
+const FORK_LABEL_INFIX: &str = "+mp.";
 const HERDR_UPDATE_COMMAND: &str = "herdr update";
 const HOMEBREW_UPDATE_COMMAND: &str = "brew update && brew upgrade herdr";
 const MISE_UPDATE_COMMAND: &str = "mise upgrade herdr";
@@ -230,6 +237,17 @@ struct ManifestReleaseMetadata {
     announcement: Option<serde_json::Value>,
 }
 
+/// `fork-latest.json`, published next to the fork's binaries by its build workflow.
+#[derive(Deserialize)]
+struct ForkManifest {
+    commit: String,
+    base_version: String,
+    protocol: u32,
+    endpoint_generation: u32,
+    assets: BTreeMap<String, String>,
+    sha256: BTreeMap<String, String>,
+}
+
 #[derive(Deserialize)]
 struct PreviewManifest {
     channel: String,
@@ -323,6 +341,17 @@ impl ReleaseInfo {
     fn label(&self) -> &str {
         &self.identity
     }
+
+    /// The version the installed binary will report, which live handoff and post-update
+    /// checks compare against. Fork builds keep the upstream version under their label.
+    fn server_version(&self) -> String {
+        let fork_prefix = format!("{}{FORK_LABEL_INFIX}", self.version);
+        if self.identity.starts_with(&fork_prefix) {
+            self.version.to_string()
+        } else {
+            self.identity.clone()
+        }
+    }
 }
 
 fn fetch_update_manifest() -> Result<UpdateManifest, String> {
@@ -331,6 +360,64 @@ fn fetch_update_manifest() -> Result<UpdateManifest, String> {
 
 fn fetch_preview_manifest() -> Result<PreviewManifest, String> {
     fetch_json_manifest(PREVIEW_UPDATE_MANIFEST_URL)
+}
+
+fn fetch_fork_manifest() -> Result<ForkManifest, String> {
+    fetch_json_manifest(FORK_UPDATE_MANIFEST_URL)
+}
+
+fn upstream_updates_requested() -> bool {
+    env::var(UPSTREAM_UPDATES_ENV).is_ok_and(|value| !value.trim().is_empty() && value != "0")
+}
+
+fn release_info_from_fork_manifest(
+    manifest: &ForkManifest,
+    current_commit: Option<&str>,
+) -> Result<Option<ReleaseInfo>, String> {
+    let commit = manifest.commit.trim();
+    if commit.len() < 8 || !commit.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(format!("invalid commit in fork manifest: {commit}"));
+    }
+    if current_commit.is_some_and(|current| current.trim().eq_ignore_ascii_case(commit)) {
+        return Ok(None);
+    }
+    let version = Version::parse(&manifest.base_version).ok_or_else(|| {
+        format!(
+            "invalid base_version in fork manifest: {}",
+            manifest.base_version
+        )
+    })?;
+    let (os, arch) = platform_target();
+    let asset_key = format!("{os}-{arch}");
+    let download_url = manifest
+        .assets
+        .get(&asset_key)
+        .cloned()
+        .ok_or_else(|| format!("no herdr-multiplayer build for {asset_key}"))?;
+    let sha256 = manifest
+        .sha256
+        .get(&asset_key)
+        .map(|sha256| sha256.trim().to_ascii_lowercase())
+        .filter(|sha256| sha256.len() == 64 && sha256.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .ok_or_else(|| format!("fork manifest has no valid SHA-256 checksum for {asset_key}"))?;
+    let short_commit = commit.get(..8).unwrap_or(commit).to_ascii_lowercase();
+    Ok(Some(ReleaseInfo {
+        identity: format!("{version}{FORK_LABEL_INFIX}{short_commit}"),
+        version,
+        channel: UpdateChannel::Stable,
+        build_id: None,
+        commit: Some(commit.to_owned()),
+        #[cfg(not(windows))]
+        target_protocol: Some(manifest.protocol),
+        #[cfg(not(windows))]
+        target_endpoint_generation: Some(manifest.endpoint_generation),
+        download_url,
+        sha256: Some(sha256),
+        #[cfg(windows)]
+        package_format: "exe".into(),
+        // Release notes are keyed by the reported version, which fork builds share.
+        notes_body: String::new(),
+    }))
 }
 
 fn fetch_json_manifest<T>(url: &str) -> Result<T, String>
@@ -531,6 +618,13 @@ fn first_windows_stable_is_pending(
 }
 
 fn check_latest() -> Result<Option<ReleaseInfo>, String> {
+    if upstream_updates_requested() {
+        return check_upstream_latest();
+    }
+    release_info_from_fork_manifest(&fetch_fork_manifest()?, crate::build_info::fork_commit())
+}
+
+fn check_upstream_latest() -> Result<Option<ReleaseInfo>, String> {
     let channel = UpdateChannel::configured();
     if channel == UpdateChannel::Preview {
         return release_info_from_preview_manifest(&fetch_preview_manifest()?);
@@ -1372,7 +1466,7 @@ fn runtime_matches_release(status: &crate::api::RuntimeStatus, release: &Release
     let protocol_matches = release
         .target_protocol
         .is_none_or(|protocol| status.protocol == Some(protocol));
-    let version_matches = status.version.as_deref() == Some(release.label());
+    let version_matches = status.version.as_deref() == Some(release.server_version().as_str());
     protocol_matches && version_matches
 }
 
@@ -1606,7 +1700,7 @@ fn live_handoff_server_via_api_for_release_at(
     let params = ServerLiveHandoffParams {
         import_exe: Some(updated_exe.display().to_string()),
         expected_protocol: release.target_protocol,
-        expected_version: Some(release.label().to_string()),
+        expected_version: Some(release.server_version()),
     };
 
     send_server_update_method_at(
@@ -1693,7 +1787,7 @@ fn wait_for_server_handoff_at(
         socket_path,
         timeout,
         release.target_protocol,
-        Some(release.label()),
+        Some(release.server_version().as_str()),
     )
 }
 
@@ -2146,7 +2240,14 @@ pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
         return Err("run `herdr update` outside herdr after detaching from the session".into());
     }
 
-    eprintln!("checking {} channel for updates...", channel.as_str());
+    if upstream_updates_requested() {
+        eprintln!(
+            "checking official herdr {} channel for updates...",
+            channel.as_str()
+        );
+    } else {
+        eprintln!("checking herdr-multiplayer builds for updates...");
+    }
 
     let current = Version::current();
 
@@ -2664,6 +2765,104 @@ mod tests {
             stream.write_all(b"\n").unwrap();
             stream.flush().unwrap();
         })
+    }
+
+    fn fork_manifest(commit: &str) -> ForkManifest {
+        let (os, arch) = platform_target();
+        let key = format!("{os}-{arch}");
+        ForkManifest {
+            commit: commit.into(),
+            base_version: "0.9.5".into(),
+            protocol: 7,
+            endpoint_generation: 1,
+            assets: BTreeMap::from([(key.clone(), format!("https://example.invalid/{key}"))]),
+            sha256: BTreeMap::from([(key, "A".repeat(64))]),
+        }
+    }
+
+    #[test]
+    fn fork_manifest_selects_this_platform_and_labels_the_build() {
+        let (os, arch) = platform_target();
+        let release =
+            release_info_from_fork_manifest(&fork_manifest("0D868881aa"), Some("ecd9c9c1"))
+                .unwrap()
+                .expect("a different commit is an update");
+        assert_eq!(release.label(), "0.9.5+mp.0d868881");
+        assert_eq!(release.server_version(), "0.9.5");
+        assert_eq!(release.commit.as_deref(), Some("0D868881aa"));
+        assert_eq!(release.sha256, Some("a".repeat(64)));
+        assert!(release.download_url.ends_with(&format!("{os}-{arch}")));
+        assert!(release.notes_body.is_empty());
+        #[cfg(not(windows))]
+        {
+            assert_eq!(release.target_protocol, Some(7));
+            assert_eq!(release.target_endpoint_generation, Some(1));
+        }
+    }
+
+    #[test]
+    fn fork_manifest_for_the_running_commit_is_up_to_date() {
+        let manifest = fork_manifest("0d868881aa");
+        assert!(
+            release_info_from_fork_manifest(&manifest, Some("0D868881AA"))
+                .unwrap()
+                .is_none()
+        );
+        // Local builds carry no commit, so the published build is always offered.
+        assert!(release_info_from_fork_manifest(&manifest, None)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn fork_manifest_rejects_missing_platforms_bad_checksums_and_commits() {
+        let mut missing = fork_manifest("0d868881aa");
+        missing.assets.clear();
+        assert!(release_info_from_fork_manifest(&missing, None)
+            .unwrap_err()
+            .contains("no herdr-multiplayer build"));
+
+        let mut bad_checksum = fork_manifest("0d868881aa");
+        for checksum in bad_checksum.sha256.values_mut() {
+            *checksum = "not-a-checksum".into();
+        }
+        assert!(release_info_from_fork_manifest(&bad_checksum, None).is_err());
+
+        let bad_commit = ForkManifest {
+            commit: "release".into(),
+            ..fork_manifest("0d868881aa")
+        };
+        assert!(release_info_from_fork_manifest(&bad_commit, None).is_err());
+    }
+
+    #[test]
+    fn upstream_release_labels_are_their_own_server_version() {
+        let release = fake_release("0.5.6", Some(4));
+        assert_eq!(release.server_version(), release.label());
+    }
+
+    #[test]
+    fn fork_manifest_json_matches_the_published_shape() {
+        let manifest: ForkManifest = serde_json::from_str(
+            r#"{
+                "commit": "0d868881aabbccddeeff00112233445566778899",
+                "base_version": "0.9.5",
+                "protocol": 7,
+                "endpoint_generation": 1,
+                "assets": {
+                    "macos-aarch64": "https://github.com/sschoedel/herdr-multiplayer/releases/download/fork-latest/herdr-macos-aarch64",
+                    "linux-x86_64": "https://github.com/sschoedel/herdr-multiplayer/releases/download/fork-latest/herdr-linux-x86_64"
+                },
+                "sha256": {
+                    "macos-aarch64": "acb6359fbd816ad307a6e9c59f0b5fb698658d3fb9f39bfdd32cbec322bb658d",
+                    "linux-x86_64": "4c6411fc146a92262324239c84fd1d16b6231b5bff0dae5542c7f0298071e557"
+                },
+                "future_field": true
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.assets.len(), 2);
+        assert_eq!(manifest.endpoint_generation, 1);
     }
 
     fn fake_release(version: &str, target_protocol: Option<u32>) -> ReleaseInfo {

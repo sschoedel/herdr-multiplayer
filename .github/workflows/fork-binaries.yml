@@ -69,6 +69,9 @@ jobs:
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
       - name: Build
+        env:
+          # Lets `herdr update` tell fork builds apart; they all report the upstream version.
+          HERDR_FORK_COMMIT: ${{ github.sha }}
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package
@@ -96,10 +99,44 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
           merge-multiple: true
+
+      - name: Write update manifest
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          # `herdr update` in fork builds reads this instead of herdr.dev/latest.json.
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          src = pathlib.Path(".")
+          def const(path, name):
+              text = (src / path).read_text()
+              return int(re.search(rf"pub const {name}: u32 = (\d+);", text).group(1))
+          version = re.search(r'^version = "([^"]+)"', (src / "Cargo.toml").read_text(), re.M).group(1)
+          base = f"https://github.com/{os.environ['REPO']}/releases/download/fork-latest"
+          builds = {"macos-aarch64": "herdr-macos-aarch64", "linux-x86_64": "herdr-linux-x86_64"}
+          sums = {}
+          for name in builds.values():
+              digest, filename = (pathlib.Path("dist") / f"{name}.sha256").read_text().split()
+              sums[filename] = digest
+          manifest = {
+              "commit": os.environ["GITHUB_SHA"],
+              "base_version": version,
+              "protocol": const("src/protocol/wire.rs", "PROTOCOL_VERSION"),
+              "endpoint_generation": const("src/protocol/endpoint.rs", "ENDPOINT_PROTOCOL_GENERATION"),
+              "assets": {key: f"{base}/{name}" for key, name in builds.items()},
+              "sha256": {key: sums[name] for key, name in builds.items()},
+          }
+          (pathlib.Path("dist") / "fork-latest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print(json.dumps(manifest, indent=2))
+          PY
 
       - name: Publish fork-latest
         env:
@@ -111,6 +148,7 @@ jobs:
           base="https://github.com/$REPO/releases/download/fork-latest"
           cat > notes.md <<EOF
           Built from \`$GITHUB_SHA\` on \`multiplayer-cursors\`. Replaced on every push.
+          Already installed? \`herdr update\` (or \`herdr update --handoff\` on a shared server) installs this build.
 
           \`\`\`
           $(cat SHA256SUMS)
@@ -134,4 +172,4 @@ jobs:
           gh release create fork-latest --repo "$REPO" --prerelease \
             --target "$GITHUB_SHA" --title "fork-latest (${GITHUB_SHA::8})" \
             --notes-file notes.md \
-            herdr-macos-aarch64 herdr-linux-x86_64 SHA256SUMS
+            herdr-macos-aarch64 herdr-linux-x86_64 SHA256SUMS fork-latest.json

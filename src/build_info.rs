@@ -20,6 +20,12 @@ pub fn version() -> String {
     }
 }
 
+/// Commit a herdr-multiplayer release build was made from, set by the fork's build workflow.
+/// Fork builds keep the upstream version and identify themselves by this commit.
+pub fn fork_commit() -> Option<&'static str> {
+    non_empty(option_env!("HERDR_FORK_COMMIT"))
+}
+
 pub fn is_preview() -> bool {
     channel() == "preview"
 }

@@ -88,7 +88,7 @@ main() {
     else
         log "ready. run 'herdr' to get started."
     fi
-    warn "don't run 'herdr update': it installs official herdr over this fork. rerun this installer instead."
+    log "later updates: run 'herdr update' (add --handoff on a machine hosting a shared session)"
     echo ""
 }
 

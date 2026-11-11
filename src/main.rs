@@ -736,7 +736,14 @@ fn main() -> io::Result<()> {
 
     if args.iter().any(|a| a == "--version" || a == "-V") {
         platform::begin_cli_output();
-        println!("herdr {}", crate::build_info::version());
+        match crate::build_info::fork_commit() {
+            Some(commit) => println!(
+                "herdr {} (herdr-multiplayer {})",
+                crate::build_info::version(),
+                commit.get(..8).unwrap_or(commit)
+            ),
+            None => println!("herdr {}", crate::build_info::version()),
+        }
         return Ok(());
     }
 
