@@ -151,6 +151,44 @@ pub(super) fn render_agent_panel_header(
     true
 }
 
+/// The Sunday Robotics mark (sunday.ai's logo) in 2x3 sextant cells, drawn with fuller,
+/// mirror-symmetric petals so they stay legible at terminal size.
+const SUNDAY_MARK: [&str; 6] = [
+    "🬞🬹██🬺🬱🬵🬻██🬹🬏",
+    "█████🬎🬎█████",
+    "🬊██🬕    🬨██🬆",
+    "🬵██🬲    🬷██🬱",
+    "█████🬹🬹█████",
+    "🬁🬎██🬝🬆🬊🬬██🬎🬀",
+];
+const SUNDAY_MARK_WIDTH: u16 = 12;
+
+/// Draws the mark in the bottom-left corner of the agent list when the list leaves room,
+/// with a blank row above it. Spaces stay transparent so the sidebar background shows.
+fn render_sunday_mark(buffer: &mut Buffer, body: Rect, first_free_row: u16) {
+    let height = SUNDAY_MARK.len() as u16;
+    // Leave room for the sidebar collapse toggle at the bottom-right corner.
+    if body.width < SUNDAY_MARK_WIDTH + 4 || body.height < height {
+        return;
+    }
+    let top = body.bottom() - height;
+    if top <= first_free_row {
+        return;
+    }
+    let x = body.x.saturating_add(1);
+    for (row, line) in SUNDAY_MARK.iter().enumerate() {
+        for (col, symbol) in line.chars().enumerate() {
+            if symbol == ' ' {
+                continue;
+            }
+            if let Some(cell) = buffer.cell_mut((x + col as u16, top + row as u16)) {
+                cell.set_char(symbol)
+                    .set_fg(ratatui::style::Color::Rgb(0, 0, 0));
+            }
+        }
+    }
+}
+
 pub(super) fn render_agent_list<T>(
     buffer: &mut Buffer,
     area: Rect,
@@ -171,6 +209,7 @@ pub(super) fn render_agent_list<T>(
     hits.agent_body = body;
     if body.is_empty() || rows.is_empty() {
         *agent_scroll = 0;
+        let mut first_free_row = body.y;
         if let Some(message) = empty_message.filter(|_| !body.is_empty()) {
             put_text(
                 buffer,
@@ -182,7 +221,9 @@ pub(super) fn render_agent_list<T>(
                     .fg(config.palette.overlay0)
                     .add_modifier(Modifier::DIM),
             );
+            first_free_row = body.y.saturating_add(1);
         }
+        render_sunday_mark(buffer, body, first_free_row);
         return;
     }
 
@@ -231,6 +272,8 @@ pub(super) fn render_agent_list<T>(
         let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
         hits.agent_scrollbar = track;
         super::scroll::render_list_scrollbar(buffer, track, metrics, &config.palette);
+    } else {
+        render_sunday_mark(buffer, body, y);
     }
 }
 

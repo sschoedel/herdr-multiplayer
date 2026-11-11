@@ -189,3 +189,38 @@ fn presence_from_another_connection_or_with_cursors_disabled_is_not_drawn() {
         hidden_baseline.cells
     );
 }
+
+#[test]
+fn sunday_mark_sits_bottom_left_of_the_agent_panel_only_when_there_is_room() {
+    let mark = [
+        "🬞🬹██🬺🬱🬵🬻██🬹🬏",
+        "█████🬎🬎█████",
+        "🬊██🬕    🬨██🬆",
+        "🬵██🬲    🬷██🬱",
+        "█████🬹🬹█████",
+        "🬁🬎██🬝🬆🬊🬬██🬎🬀",
+    ];
+    let mut state = presence_state();
+    let frame = state.compose(106, 40).unwrap().frame;
+    let rows = frame_rows(&frame);
+    let sidebar = |row: &String| row.chars().take(16).collect::<String>();
+    // Bottom six rows, one column in from the left edge, black on the sidebar background.
+    for (offset, line) in mark.iter().enumerate() {
+        let row = &rows[40 - mark.len() + offset];
+        assert_eq!(sidebar(row), format!(" {line}   "), "row {offset}: {row:?}");
+    }
+    let cell = &frame.cells[39 * 106 + 1];
+    assert_eq!(
+        cell.fg,
+        crate::protocol::color_to_u32(ratatui::style::Color::Rgb(0, 0, 0))
+    );
+    let background = &frame.cells[39 * 106 + 10];
+    assert_eq!(
+        cell.bg, background.bg,
+        "the mark keeps the sidebar background"
+    );
+
+    // Too short for the agent list plus a blank row above the mark: no mark.
+    let short = state.compose(106, 12).unwrap().frame;
+    assert!(!frame_rows(&short).iter().any(|row| row.contains(mark[0])));
+}
