@@ -6,6 +6,8 @@ A modified fork of [herdr](https://github.com/herdrdev/herdr) v0.9.5 for several
 curl -fsSL https://raw.githubusercontent.com/sschoedel/herdr-multiplayer/multiplayer-cursors/install.sh | bash
 ```
 
+If herdr is already running, press `ctrl+b q` to detach, then run `herdr` again to start the new version.
+
 ---
 
 # herdr
