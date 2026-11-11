@@ -9,6 +9,7 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
+      - "install.sh"
   workflow_dispatch:
 
 concurrency:
