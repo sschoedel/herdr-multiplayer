@@ -8,6 +8,8 @@ curl -fsSL https://raw.githubusercontent.com/sschoedel/herdr-multiplayer/multipl
 
 If herdr is already running, press `ctrl+b q` to detach, then run `herdr` again to start the new version.
 
+On a machine hosting a shared session, `herdr server live-handoff --import-exe ~/.local/bin/herdr` switches the running server over without killing any panes.
+
 ---
 
 # herdr
