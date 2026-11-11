@@ -21,7 +21,6 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  RUST_TOOLCHAIN_VERSION: 1.96.1
 
 jobs:
   build:
@@ -44,16 +43,20 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Read toolchain versions
+        id: toolchain
+        run: .github/scripts/fork-toolchain-versions.sh >> "$GITHUB_OUTPUT"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+          toolchain: ${{ steps.toolchain.outputs.rust }}
           targets: ${{ matrix.target }}
 
       - name: Install Zig
         uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
         with:
-          version: 0.16.0
+          version: ${{ steps.toolchain.outputs.zig }}
 
       - name: Install Linux build tools
         if: runner.os == 'Linux'
