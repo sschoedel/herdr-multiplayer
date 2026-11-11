@@ -1,5 +1,3 @@
-# herdr-multiplayer
-
 A modified fork of [herdr](https://github.com/herdrdev/herdr) v0.9.5 for several people working in one shared herdr session. **This is not the official herdr project**; please report fork issues here, not upstream.
 
 ## Install
@@ -7,21 +5,6 @@ A modified fork of [herdr](https://github.com/herdrdev/herdr) v0.9.5 for several
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sschoedel/herdr-multiplayer/multiplayer-cursors/install.sh | bash
 ```
-
-Works on Apple Silicon Macs and x86_64 Linux.
-
-To update, run `herdr update` outside herdr: it installs the latest fork build, never official herdr. On a machine hosting a shared session, `herdr update --handoff` also switches the running server over without killing any panes. Then restart your herdr windows (`ctrl+b q`, then `herdr`). Rerunning the install command works too. To go back to official herdr, run `HERDR_UPSTREAM_UPDATES=1 herdr update`.
-
-To share a session, everyone SSHes into the host as the same user and adds it with `herdr machine add user@host --remote-session default`.
-
-## What's different from herdr
-
-- **Your own pane focus:** each connection keeps its own focused pane, so clicking or typing never moves anyone else.
-- **Presence:** see other people's mouse pointer and which pane they're working in. Set your name with `ui.presence_name`; hide others with `ui.show_peer_cursors = false`.
-- **Shared tab sizing:** on the host, `ui.shared_tab_size = "smallest"` fits shared tabs to every viewer instead of resizing them to whoever typed last.
-- A small Sunday Robotics mark in the agent panel.
-
-Pointers need the fork on the host and on each person's machine; focus and sizing only need it on the host. Every change is in the commits on `multiplayer-cursors`. herdr is licensed under Apache-2.0 (see [LICENSE](LICENSE)).
 
 ---
 
