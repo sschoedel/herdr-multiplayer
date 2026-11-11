@@ -8,9 +8,9 @@ A modified fork of [herdr](https://github.com/herdrdev/herdr) v0.9.5 for several
 curl -fsSL https://raw.githubusercontent.com/sschoedel/herdr-multiplayer/multiplayer-cursors/install.sh | bash
 ```
 
-Works on Apple Silicon Macs and x86_64 Linux. Run the same command again to update. Don't use `herdr update`: it replaces the fork with official herdr.
+Works on Apple Silicon Macs and x86_64 Linux.
 
-After updating, restart your herdr windows (`ctrl+b q`, then `herdr`). On a machine hosting a shared session, `herdr server live-handoff --import-exe ~/.local/bin/herdr` switches the running server over without killing any panes.
+To update, run `herdr update` outside herdr: it installs the latest fork build, never official herdr. On a machine hosting a shared session, `herdr update --handoff` also switches the running server over without killing any panes. Then restart your herdr windows (`ctrl+b q`, then `herdr`). Rerunning the install command works too. To go back to official herdr, run `HERDR_UPSTREAM_UPDATES=1 herdr update`.
 
 To share a session, everyone SSHes into the host as the same user and adds it with `herdr machine add user@host --remote-session default`.
 
