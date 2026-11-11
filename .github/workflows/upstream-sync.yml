@@ -196,7 +196,7 @@ jobs:
           bullets() { awk 'NR <= 60 { print "- `" $0 "`" } END { if (NR > 60) print "- and " NR - 60 " more" }'; }
           merge_base="$(git merge-base "$BASE" "$TARGET")"
           both="$(comm -12 <(git diff --name-only "$merge_base" "$TARGET" | sort) \
-                           <(git diff --name-only "$merge_base" "$BASE" | sort))"
+                           <(git diff --name-only "${previous:-$merge_base}" "$BASE" | sort))"
           case "$TESTS" in
             success) tests="Tests passed on the merge ([run]($RUN_URL))." ;;
             failure) tests="**Tests failed on the merge** ([run]($RUN_URL))." ;;

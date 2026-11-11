@@ -10,6 +10,7 @@ on:
       - "**.md"
       - "docs/**"
       - "install.sh"
+      - ".github/workflows/upstream-sync.yml"
   workflow_dispatch:
 
 concurrency:
