@@ -744,7 +744,7 @@ impl HeadlessServer {
     ///
     /// With the `smallest` policy every active viewer of the tab fits, and the result does not
     /// depend on which viewer triggered it, so alternating input never resizes the panes.
-    fn shell_tab_geometry(
+    pub(super) fn shell_tab_geometry(
         &self,
         client_id: u64,
         target: crate::ui::TabSurfaceTarget,

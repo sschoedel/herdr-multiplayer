@@ -517,7 +517,12 @@ impl HeadlessServer {
                 });
             if changed {
                 if let Some(target) = self.shell_target_for_client(*client_id) {
-                    let area = Rect::new(0, 0, *cols, *rows);
+                    // Use the shared-tab sizing policy, not only this controller's window.
+                    let ((geometry_cols, geometry_rows), cell_size) = self
+                        .shell_tab_geometry(*client_id, target)
+                        .unwrap_or(((*cols, *rows), *cell_size));
+                    let cell_size = &cell_size;
+                    let area = Rect::new(0, 0, geometry_cols, geometry_rows);
                     let layout = crate::ui::compute_tab_surface_for(
                         &self.app.state,
                         &self.app.terminal_runtimes,

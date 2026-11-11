@@ -419,3 +419,75 @@ async fn a_script_closing_one_persons_pane_does_not_move_the_other() {
         .contains_key(&moved));
     shutdown_test_runtimes(&mut server);
 }
+
+#[tokio::test]
+async fn smallest_shared_tab_refits_when_a_smaller_viewer_returns() {
+    let mut server = test_headless_server();
+    server.app.state.shared_tab_size = crate::config::SharedTabSizeConfig::Smallest;
+    let mut workspace = crate::workspace::Workspace::test_new("returning-viewer");
+    let pane = workspace.tabs[0].root_pane;
+    workspace.insert_test_runtime(
+        pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"SHARED"),
+    );
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let (_large_control, _large_render) = connect_test_shell(&mut server, 41, 100, 30);
+    let (_small_control, _small_render) = connect_test_shell(&mut server, 42, 70, 20);
+    server.clients.get_mut(&41).unwrap().outer_terminal_focus = Some(true);
+    let size = |server: &HeadlessServer| {
+        server.app.state.workspaces[0].test_runtimes[&pane].current_size()
+    };
+    let shared = size(&server);
+
+    // The smaller viewer switches to another machine: the pane grows to the larger viewer.
+    server.set_client_shell_surface_active(42, false);
+    let alone = size(&server);
+    assert!(
+        alone.0 > shared.0 && alone.1 > shared.1,
+        "{alone:?} vs {shared:?}"
+    );
+
+    // It comes back while the larger viewer is focused on the same tab: refit for both.
+    server.set_client_shell_surface_active(42, true);
+    assert_eq!(size(&server), shared);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn smallest_shared_tab_ignores_a_controller_growing_past_another_viewer() {
+    let mut server = test_headless_server();
+    server.app.state.shared_tab_size = crate::config::SharedTabSizeConfig::Smallest;
+    let mut workspace = crate::workspace::Workspace::test_new("growing-controller");
+    let pane = workspace.tabs[0].root_pane;
+    workspace.insert_test_runtime(
+        pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"SHARED"),
+    );
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let size = |server: &HeadlessServer| {
+        server.app.state.workspaces[0].test_runtimes[&pane].current_size()
+    };
+    let (_you_control, _you_render) = connect_test_shell(&mut server, 51, 100, 30);
+    let fits_you = size(&server);
+    let (_peer_control, _peer_render) = connect_test_shell(&mut server, 52, 70, 20);
+    server.claim_shell_tab_geometry(52, false);
+
+    // The controlling peer grows past you; the render pass must still fit your window.
+    assert!(server.handle_server_event(ServerEvent::ClientShellResize {
+        client_id: 52,
+        surface_cols: 140,
+        surface_rows: 40,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+    }));
+    server.render_and_stream();
+    assert_eq!(size(&server), fits_you);
+    shutdown_test_runtimes(&mut server);
+}
