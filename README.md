@@ -10,6 +10,8 @@ If herdr is already running, press `ctrl+b q` to detach, then run `herdr` again 
 
 On a machine hosting a shared session, `herdr server live-handoff --import-exe ~/.local/bin/herdr` switches the running server over without killing any panes.
 
+To switch back to official herdr, run `curl -fsSL https://herdr.dev/install.sh | sh`.
+
 ---
 
 # herdr
